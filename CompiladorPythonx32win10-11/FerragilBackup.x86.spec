@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['FerragilBackup.pyw'],
+    ['FerragilBackup.x86.pyw'],
     pathex=[],
     binaries=[],
     datas=[('logoF.png', '.'), ('Ferragil.png', '.')],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='FerragilBackup',
+    name='FerragilBackup.x86',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
