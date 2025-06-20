@@ -11,3 +11,6 @@ This is a python software created to automatically (or manually) backup specifie
 
 # Support
 For Windows 7 SP1, Windows 8, Windows 10, Windows 11
+
+
+![GUI](./GUI.png)
