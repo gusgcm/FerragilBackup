@@ -5,7 +5,7 @@ This is a python software created to automatically (or manually) backup specifie
 
 # Features
 - It will only copy files from origin directory that have been edited or new files.
-- automation (copy/paste) task runs everytime .exe is launched, everyday at 17:30 on windows clock and at windows startup.
+- The automation (copy/paste) task runs every time the .exe is launched, at Windows startup, and you can create custom schedules.
 - systray function to hide from taskbar 
  * automation and systray combined = minimized auto start
 

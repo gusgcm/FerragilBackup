@@ -30,6 +30,7 @@ class FileCopierApp:
         self.progress_bars = {}
         self.progress_labels = {}
         self.time_labels = {}
+        self.last_backup = {}  # Track last backup time for each schedule
 
         self.load_config()
         self.systray_var.set(1 if self.config_data.get("systray", False) else 0)
@@ -52,6 +53,7 @@ class FileCopierApp:
 
         check_frame = tk.Frame(control_frame)
         check_frame.pack(fill=tk.X, pady=5)
+        tk.Button(check_frame, text="Horários Backup", command=self.manage_schedules).pack(side=tk.LEFT, padx=5)
         Checkbutton(check_frame, text='Automação', variable=self.automation_var, command=self.toggle_automation).pack(side=tk.LEFT, padx=5)
         Checkbutton(check_frame, text='Systray', variable=self.systray_var, command=self.toggle_systray).pack(side=tk.LEFT, padx=5)
 
@@ -102,6 +104,145 @@ class FileCopierApp:
 
         if self.config_data.get("systray", False):
             self.hide_to_systray()
+
+    def validate_paths(self, source, destination):
+        try:
+            if not os.path.exists(source) or not os.path.isdir(source):
+                self.master.after(0, lambda: messagebox.showerror("Erro", f"Diretório de origem {source} não existe ou não é um diretório."))
+                return False
+            if not os.access(destination, os.W_OK):
+                self.master.after(0, lambda: messagebox.showerror("Erro", f"Diretório de destino {destination} não é gravável."))
+                return False
+            return True
+        except Exception as e:
+            self.master.after(0, lambda: messagebox.showerror("Erro", f"Erro ao validar diretórios {source} ou {destination}: {e}"))
+            return False
+
+    def copy_file_with_retry(self, src, dst, retries=3, delay=2):
+        for attempt in range(retries):
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with open(src, 'rb') as fsrc, open(dst, 'wb') as fdst:
+                    shutil.copyfileobj(fsrc, fdst, length=1024*1024)  # 1MB buffer
+                shutil.copystat(src, dst)  # Preserve metadata
+                return True
+            except (IOError, OSError, PermissionError) as e:
+                if attempt == retries - 1:
+                    self.master.after(0, lambda: messagebox.showerror("Erro", f"Falha ao copiar {src} para {dst} após {retries} tentativas: {e}"))
+                    return False
+                time.sleep(delay)
+        return False
+
+    def manage_schedules(self):
+        dialog = tk.Toplevel(self.master)
+        dialog.title("Gerenciar Horários de Backup")
+        dialog.transient(self.master)
+        dialog.grab_set()
+
+        main_frame = tk.Frame(dialog)
+        main_frame.pack(padx=10, pady=10)
+
+        tk.Label(main_frame, text="Horários Configurados:").pack(anchor="w")
+        schedule_listbox = tk.Listbox(main_frame, height=5, width=10)
+        schedule_listbox.pack(side=tk.LEFT, padx=5, pady=5)
+
+        for schedule in self.config_data.get("schedules", []):
+            schedule_listbox.insert(tk.END, f"{schedule['hour']:02d}:{schedule['minute']:02d}")
+
+        button_frame = tk.Frame(main_frame)
+        button_frame.pack(side=tk.LEFT, padx=5)
+
+        def add_schedule():
+            add_dialog = tk.Toplevel(dialog)
+            add_dialog.title("Adicionar Horário")
+            add_dialog.transient(dialog)
+            add_dialog.grab_set()
+
+            tk.Label(add_dialog, text="Hora (00-23):").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+            hour_spinbox = tk.Spinbox(add_dialog, from_=0, to=23, width=5, format="%02.0f")
+            hour_spinbox.grid(row=0, column=1, padx=5, pady=5)
+
+            tk.Label(add_dialog, text="Minuto (00-59):").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+            minute_spinbox = tk.Spinbox(add_dialog, from_=0, to=59, width=5, format="%02.0f")
+            minute_spinbox.grid(row=1, column=1, padx=5, pady=5)
+
+            def confirm():
+                try:
+                    hour = int(hour_spinbox.get())
+                    minute = int(minute_spinbox.get())
+                    if 0 <= hour <= 23 and 0 <= minute <= 59:
+                        schedule = {"hour": hour, "minute": minute}
+                        if schedule not in self.config_data.get("schedules", []):
+                            schedule_listbox.insert(tk.END, f"{hour:02d}:{minute:02d}")
+                            self.config_data.setdefault("schedules", []).append(schedule)
+                            self.save_config()
+                        add_dialog.destroy()
+                    else:
+                        messagebox.showwarning("Entrada Inválida", "Hora deve ser 00-23 e minuto 00-59.")
+                except ValueError:
+                    messagebox.showwarning("Entrada Inválida", "Digite valores numéricos válidos.")
+
+            tk.Button(add_dialog, text="Confirmar", command=confirm).grid(row=2, column=0, columnspan=2, pady=10)
+
+        def edit_schedule():
+            selected = schedule_listbox.curselection()
+            if not selected:
+                messagebox.showwarning("Nenhum Selecionado", "Selecione um horário para editar.")
+                return
+            index = selected[0]
+            schedule = self.config_data["schedules"][index]
+
+            edit_dialog = tk.Toplevel(dialog)
+            edit_dialog.title("Editar Horário")
+            edit_dialog.transient(dialog)
+            edit_dialog.grab_set()
+
+            tk.Label(edit_dialog, text="Hora (00-23):").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+            hour_spinbox = tk.Spinbox(edit_dialog, from_=0, to=23, width=5, format="%02.0f")
+            hour_spinbox.delete(0, tk.END)
+            hour_spinbox.insert(0, f"{schedule['hour']:02d}")
+            hour_spinbox.grid(row=0, column=1, padx=5, pady=5)
+
+            tk.Label(edit_dialog, text="Minuto (00-59):").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+            minute_spinbox = tk.Spinbox(edit_dialog, from_=0, to=59, width=5, format="%02.0f")
+            minute_spinbox.delete(0, tk.END)
+            minute_spinbox.insert(0, f"{schedule['minute']:02d}")
+            minute_spinbox.grid(row=1, column=1, padx=5, pady=5)
+
+            def confirm():
+                try:
+                    hour = int(hour_spinbox.get())
+                    minute = int(minute_spinbox.get())
+                    if 0 <= hour <= 23 and 0 <= minute <= 59:
+                        new_schedule = {"hour": hour, "minute": minute}
+                        if new_schedule not in self.config_data.get("schedules", []) or new_schedule == schedule:
+                            schedule_listbox.delete(index)
+                            schedule_listbox.insert(index, f"{hour:02d}:{minute:02d}")
+                            self.config_data["schedules"][index] = new_schedule
+                            self.save_config()
+                            edit_dialog.destroy()
+                        else:
+                            messagebox.showwarning("Entrada Inválida", "Horário já existe.")
+                    else:
+                        messagebox.showwarning("Entrada Inválida", "Hora deve ser 00-23 e minuto 00-59.")
+                except ValueError:
+                    messagebox.showwarning("Entrada Inválida", "Digite valores numéricos válidos.")
+
+            tk.Button(edit_dialog, text="Confirmar", command=confirm).grid(row=2, column=0, columnspan=2, pady=10)
+
+        def remove_schedule():
+            selected = schedule_listbox.curselection()
+            if not selected:
+                messagebox.showwarning("Nenhum Selecionado", "Selecione um horário para remover.")
+                return
+            index = selected[0]
+            schedule_listbox.delete(index)
+            self.config_data["schedules"].pop(index)
+            self.save_config()
+
+        tk.Button(button_frame, text="Adicionar", command=add_schedule).pack(pady=2)
+        tk.Button(button_frame, text="Editar", command=edit_schedule).pack(pady=2)
+        tk.Button(button_frame, text="Remover", command=remove_schedule).pack(pady=2)
 
     def add_pair(self):
         if len(self.directory_pairs) >= 200:
@@ -205,38 +346,45 @@ class FileCopierApp:
 
     def count_files_to_copy(self, origem, destino):
         total_files = 0
-        for root, _, files in os.walk(origem):
-            rel_path = os.path.relpath(root, origem)
-            dest_root = os.path.join(destino, rel_path) if rel_path != '.' else destino
-            for arquivo in files:
-                origem_path = os.path.join(root, arquivo)
-                destino_path = os.path.join(dest_root, arquivo)
-                if not os.path.exists(destino_path) or os.path.getmtime(origem_path) > os.path.getmtime(destino_path):
-                    total_files += 1
-        return total_files
-
-    def copiar_arquivos(self, origem, destino, item, progress_callback):
-        if not os.path.exists(origem) or not os.path.isdir(origem):
-            return 0
-        
-        os.makedirs(destino, exist_ok=True)
-        files_copied = 0
-        
-        for root, _, files in os.walk(origem):
-            rel_path = os.path.relpath(root, origem)
-            dest_root = os.path.join(destino, rel_path) if rel_path != '.' else destino
-            os.makedirs(dest_root, exist_ok=True)
-            
-            for arquivo in files:
-                if self.copying:
+        try:
+            for root, _, files in os.walk(origem):
+                rel_path = os.path.relpath(root, origem)
+                dest_root = os.path.join(destino, rel_path) if rel_path != '.' else destino
+                for arquivo in files:
                     origem_path = os.path.join(root, arquivo)
                     destino_path = os.path.join(dest_root, arquivo)
                     if not os.path.exists(destino_path) or os.path.getmtime(origem_path) > os.path.getmtime(destino_path):
-                        shutil.copy2(origem_path, destino_path)
-                        files_copied += 1
-                        progress_callback(files_copied, item)
-        
-        return files_copied
+                        total_files += 1
+        except Exception as e:
+            self.master.after(0, lambda: messagebox.showerror("Erro", f"Erro ao contar arquivos em {origem}: {e}"))
+        return total_files
+
+    def copiar_arquivos(self, origem, destino, item, progress_callback):
+        try:
+            if not self.validate_paths(origem, destino):
+                return 0
+
+            files_copied = 0
+            update_counter = 0
+            for root, _, files in os.walk(origem):
+                rel_path = os.path.relpath(root, origem)
+                dest_root = os.path.join(destino, rel_path) if rel_path != '.' else destino
+                os.makedirs(dest_root, exist_ok=True)
+                for arquivo in files:
+                    if self.copying:
+                        origem_path = os.path.join(root, arquivo)
+                        destino_path = os.path.join(dest_root, arquivo)
+                        if not os.path.exists(destino_path) or os.path.getmtime(origem_path) > os.path.getmtime(destino_path):
+                            if self.copy_file_with_retry(origem_path, destino_path):
+                                files_copied += 1
+                                update_counter += 1
+                                if update_counter >= 10 or os.path.getsize(origem_path) > 10*1024*1024:  # Update every 10 files or for large files
+                                    progress_callback(files_copied, item)
+                                    update_counter = 0
+            return files_copied
+        except Exception as e:
+            self.master.after(0, lambda: messagebox.showerror("Erro", f"Falha ao copiar arquivos de {origem} para {destino}: {e}"))
+            return 0
 
     def start_copy_all(self):
         if self.copying:
@@ -250,6 +398,12 @@ class FileCopierApp:
         total_files_copied = 0
         start_time = time.time()
 
+        if not self.directory_pairs:
+            self.copying = False
+            if show_message:
+                messagebox.showinfo("Nenhum Diretório", "Nenhum diretório configurado.")
+            return
+
         file_counts = {}
         for pair in self.directory_pairs:
             if pair["source"] and pair["destination"]:
@@ -262,28 +416,35 @@ class FileCopierApp:
             pair_files = file_counts.get(item, 1)
             if pair_files > 0:
                 percentage = (copied / pair_files) * 100
-                self.progress_bars[item]["value"] = percentage
-                self.tree.set(item, "Percentage", f"{percentage:.1f}%")
-                elapsed = time.time() - start_time
-                if copied > 0:
-                    time_per_file = elapsed / copied
-                    remaining_files = pair_files - copied
-                    time_remaining = remaining_files * time_per_file
-                    mins, secs = divmod(int(time_remaining), 60)
-                    self.tree.set(item, "Time", f"{mins:02d}:{secs:02d}")
-                self.master.update()
+                def update_ui():
+                    self.progress_bars[item]["value"] = percentage
+                    self.tree.set(item, "Percentage", f"{percentage:.1f}%")
+                    elapsed = time.time() - start_time
+                    if copied > 0:
+                        time_per_file = elapsed / copied
+                        remaining_files = pair_files - copied
+                        time_remaining = remaining_files * time_per_file
+                        mins, secs = divmod(int(time_remaining), 60)
+                        self.tree.set(item, "Time", f"{mins:02d}:{secs:02d}")
+                self.master.after(0, update_ui)
 
         for pair in self.directory_pairs:
             if pair["source"] and pair["destination"] and self.copying:
-                self.copiar_arquivos(pair["source"], pair["destination"], pair["item"], update_progress)
-                self.progress_bars[pair["item"]]["value"] = 0
-                self.tree.set(pair["item"], "Percentage", "0%")
-                self.tree.set(pair["item"], "Time", "--:--")
+                files_copied = self.copiar_arquivos(pair["source"], pair["destination"], pair["item"], update_progress)
+                total_files_copied += files_copied
+                def reset_ui():
+                    self.progress_bars[pair["item"]]["value"] = 0
+                    self.tree.set(pair["item"], "Percentage", "0%")
+                    self.tree.set(pair["item"], "Time", "--:--")
+                self.master.after(0, reset_ui)
 
         self.copying = False
         self.save_config()
         if show_message:
-            messagebox.showinfo('Concluído', 'Arquivos e pastas novos ou modificados copiados.')
+            if total_files_copied == 0:
+                messagebox.showwarning("Aviso", "Nenhum arquivo copiado.")
+            else:
+                messagebox.showinfo("Concluído", "Arquivos e pastas novos ou modificados copiados.")
 
     def toggle_automation(self):
         if self.automation_var.get() == 1:
@@ -311,27 +472,29 @@ class FileCopierApp:
                     pass
             winreg.CloseKey(key)
         except Exception as e:
-            print(f"Error setting autostart: {e}")
+            self.master.after(0, lambda: messagebox.showerror("Erro", f"Erro ao configurar inicialização automática: {e}"))
 
     def start_automation(self):
         self.stop_automation.clear()
         threading.Thread(target=self.automation_loop, daemon=True).start()
-        threading.Thread(target=self.run_on_startup_once, daemon=True).start()
 
     def automation_loop(self):
-        last_run = None
         while not self.stop_automation.is_set():
-            now = datetime.datetime.now()
-            today_1730 = now.replace(hour=17, minute=30, second=0, microsecond=0)
-            if last_run != now.date() and now >= today_1730 and now < today_1730 + datetime.timedelta(minutes=1):
+            if "--run-backup" in sys.argv:  # Support manual trigger for testing
                 self.copiar_todos(show_message=False)
-                last_run = now.date()
-            time.sleep(10)
-
-    def run_on_startup_once(self):
-        time.sleep(5)
-        if self.automation_var.get() == 1:
-            self.copiar_todos(show_message=False)
+                break
+            now = datetime.datetime.now()
+            current_time = (now.hour, now.minute)
+            for schedule in self.config_data.get("schedules", []):
+                schedule_time = (schedule["hour"], schedule["minute"])
+                schedule_key = f"{schedule['hour']:02d}:{schedule['minute']:02d}"
+                last_backup_time = self.last_backup.get(schedule_key)
+                # Run backup if current time matches schedule and hasn't run today
+                if current_time == schedule_time:
+                    if not last_backup_time or last_backup_time.date() < now.date():
+                        self.copiar_todos(show_message=False)
+                        self.last_backup[schedule_key] = now
+            time.sleep(60)  # Check every minute
 
     def toggle_systray(self):
         self.config_data["systray"] = bool(self.systray_var.get())
@@ -385,6 +548,7 @@ class FileCopierApp:
         else:
             self.config_data = {
                 "directory_pairs": [],
+                "schedules": [],
                 "automation": False,
                 "systray": False
             }
